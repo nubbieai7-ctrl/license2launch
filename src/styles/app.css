@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/* ============================================================
+   License2Launch — design tokens (Tailwind v4 @theme)
+   Professional, friendly, trustworthy. NOT bank/government gray.
+   Navy = trust/stability, Emerald = growth/launch, Gold = warm emphasis.
+   ============================================================ */
+@theme {
+  /* Brand palette */
+  --color-navy: #10243e;
+  --color-navy-light: #1c3a5f;
+  --color-navy-lighter: #2c5585;
+  --color-emerald: #0e7c5b;
+  --color-emerald-light: #14a37a;
+  --color-emerald-dark: #0a5c44;
+  --color-gold: #c9972f;
+  --color-gold-light: #e5bd5e;
+
+  /* Neutrals */
+  --color-ink: #16283a;
+  --color-slate-soft: #5b6b7c;
+  --color-mist: #eef2f6;
+  --color-cream: #f7f5f0;
+  --color-paper: #ffffff;
+
+  /* Progress / utility */
+  --color-success: #15803d;
+  --color-success-bg: #e6f4ea;
+  --color-warn: #b45309;
+  --color-warn-bg: #fdf3e3;
+  --color-danger: #b91c1c;
+  --color-danger-bg: #fdeaea;
+  --color-info: #2563eb;
+  --color-info-bg: #e8f0fe;
+
+  /* Fonts */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-card: 0 1px 3px rgba(16, 36, 62, 0.08),
+    0 8px 24px rgba(16, 36, 62, 0.06);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-cream text-ink font-sans antialiased;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-navy font-bold;
+    line-height: 1.15;
+  }
+  a {
+    @apply text-emerald underline-offset-2;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-emerald;
+  }
+}
+
+@layer components {
+  /* Helper component classes used by the design-system components */
+  .l2l-focus {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald focus-visible:ring-offset-2;
+  }
+}
