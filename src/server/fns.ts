@@ -413,6 +413,377 @@ export const getExplorerProfiles = createServerFn().handler(
   },
 );
 
+/* ------------------------------------------------------------------ */
+/* M3 — Personalized Career Roadmap                                     */
+/* ------------------------------------------------------------------ */
+
+export type RoadmapStatus = "not_started" | "in_progress" | "done";
+
+export interface RoadmapTaskWithProgress {
+  id: number;
+  profession_id: number | null;
+  profession_name: string | null;
+  step_order: number;
+  title: string;
+  description: string;
+  difficulty: string;
+  est_time: string;
+  suggested_deadline_days: number;
+  category: string;
+  official_link: string | null;
+  status: RoadmapStatus;
+  deadline: string | null;
+  notes: string;
+}
+
+const ROADMAP_ALLOWED = new Set(["not_started", "in_progress", "done"]);
+
+/** Core merge logic shared by the server fn and the verification script.
+ *  A null userId returns the read-only roadmap (all statuses "not_started"). */
+export function roadmapForUser(
+  d: Database,
+  userId: number | null,
+): RoadmapTaskWithProgress[] {
+  const generic = d
+    .query(
+      `SELECT t.*, p.name AS profession_name FROM roadmap_tasks t
+         LEFT JOIN professions p ON p.id = t.profession_id
+        WHERE t.profession_id IS NULL ORDER BY t.step_order`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const specific = d
+    .query(
+      `SELECT t.*, p.name AS profession_name FROM roadmap_tasks t
+         LEFT JOIN professions p ON p.id = t.profession_id
+        WHERE t.profession_id IS NOT NULL ORDER BY t.step_order`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const rows = [...generic, ...specific];
+
+  const progress = new Map<string, { status: string; deadline: string | null; notes: string }>();
+  if (userId != null) {
+    const progRows = d
+      .query(
+        "SELECT roadmap_task_id, status, deadline, notes FROM roadmap_progress WHERE user_id = $uid",
+      )
+      .all({ $uid: userId }) as Array<{
+      roadmap_task_id: number;
+      status: string;
+      deadline: string | null;
+      notes: string;
+    }>;
+    for (const pr of progRows) {
+      progress.set(String(pr.roadmap_task_id), {
+        status: pr.status,
+        deadline: pr.deadline,
+        notes: pr.notes,
+      });
+    }
+  }
+
+  return rows.map((r) => {
+    const id = Number(r.id);
+    const prog = progress.get(String(id));
+    return {
+      id,
+      profession_id: r.profession_id === null ? null : Number(r.profession_id),
+      profession_name: r.profession_name ? String(r.profession_name) : null,
+      step_order: Number(r.step_order),
+      title: String(r.title),
+      description: String(r.description),
+      difficulty: String(r.difficulty),
+      est_time: String(r.est_time),
+      suggested_deadline_days: Number(r.suggested_deadline_days),
+      category: String(r.category),
+      official_link: r.official_link ? String(r.official_link) : null,
+      status: prog && ROADMAP_ALLOWED.has(prog.status) ? (prog.status as RoadmapStatus) : "not_started",
+      deadline: prog?.deadline ?? null,
+      notes: prog?.notes ?? "",
+    };
+  });
+}
+
+export interface SaveRoadmapInput {
+  taskId: number;
+  status: RoadmapStatus;
+  notes?: string;
+  deadline?: string | null;
+}
+export type SaveRoadmapResult =
+  | { ok: true; task: RoadmapTaskWithProgress }
+  | { ok: false; error: string };
+
+/** Core save logic shared by the server fn and the verification script.
+ *  Requires a real userId. Upserts the user's progress row. */
+export function saveRoadmapTask(
+  d: Database,
+  userId: number,
+  input: SaveRoadmapInput,
+): RoadmapTaskWithProgress {
+  if (!ROADMAP_ALLOWED.has(input.status)) {
+    throw new Error("Invalid roadmap status.");
+  }
+  const notes = input.notes ?? "";
+  const deadline = input.deadline ? String(input.deadline) : null;
+  const now = new Date().toISOString();
+  d.query(
+    `INSERT INTO roadmap_progress (user_id, roadmap_task_id, status, deadline, notes, updated_at)
+     VALUES ($uid, $tid, $status, $deadline, $notes, $now)
+     ON CONFLICT(user_id, roadmap_task_id) DO UPDATE SET
+       status = excluded.status,
+       deadline = excluded.deadline,
+       notes = excluded.notes,
+       updated_at = excluded.updated_at`,
+  ).run({ $uid: userId, $tid: input.taskId, $status: input.status, $deadline: deadline, $notes: notes, $now: now });
+  const task = roadmapForUser(d, userId).find((t) => t.id === input.taskId);
+  if (!task) throw new Error("Roadmap task not found.");
+  return task;
+}
+
+export const getMyRoadmap = createServerFn().handler(
+  async ({ data }: { data: { professionId?: number } }): Promise<RoadmapTaskWithProgress[]> => {
+    await initDb();
+    const token = getCookie(SESSION_COOKIE);
+    const user = identityFromToken(db(), token);
+    // Signed-out visitors get a read-only roadmap.
+    return roadmapForUser(db(), user ? user.id : null);
+  },
+);
+
+export const updateRoadmapTask = createServerFn({ method: "POST" }).handler(
+  async ({ data }: { data: SaveRoadmapInput }): Promise<SaveRoadmapResult> => {
+    await initDb();
+    const token = getCookie(SESSION_COOKIE);
+    const user = identityFromToken(db(), token);
+    if (!user) return { ok: false, error: "You must be logged in to save roadmap progress." };
+    try {
+      const task = saveRoadmapTask(db(), user.id, data);
+      return { ok: true, task };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "Could not save." };
+    }
+  },
+);
+
+/* ------------------------------------------------------------------ */
+/* M3 — Exam Preparation Center                                         */
+/* ------------------------------------------------------------------ */
+
+export interface ExamCourse {
+  id: number;
+  profession_id: number;
+  profession_name: string;
+  profession_slug: string;
+  title: string;
+  description: string;
+  is_sample: boolean;
+  lesson_count: number;
+  question_count: number;
+}
+
+export const listExamCourses = createServerFn().handler(async (): Promise<ExamCourse[]> => {
+  await initDb();
+  const rows = db()
+    .query(
+      `SELECT c.id, c.profession_id, c.title, c.description, c.is_sample,
+              p.name AS profession_name, p.slug AS profession_slug,
+              (SELECT COUNT(*) FROM lessons l WHERE l.course_id = c.id) AS lesson_count,
+              (SELECT COUNT(*) FROM practice_questions q WHERE q.course_id = c.id) AS question_count
+         FROM exam_courses c JOIN professions p ON p.id = c.profession_id
+        ORDER BY p.name, c.id`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    profession_id: Number(r.profession_id),
+    profession_name: String(r.profession_name),
+    profession_slug: String(r.profession_slug),
+    title: String(r.title),
+    description: String(r.description),
+    is_sample: Number(r.is_sample) === 1,
+    lesson_count: Number(r.lesson_count),
+    question_count: Number(r.question_count),
+  }));
+});
+
+export interface Lesson {
+  id: number;
+  course_id: number;
+  title: string;
+  body: string;
+  order_index: number;
+}
+
+export const listCourseLessons = createServerFn().handler(
+  async ({ data }: { data: { courseId: number } }): Promise<Lesson[]> => {
+    await initDb();
+    const rows = db()
+      .query(
+        "SELECT * FROM lessons WHERE course_id = $cid ORDER BY order_index",
+      )
+      .all({ $cid: data.courseId }) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      course_id: Number(r.course_id),
+      title: String(r.title),
+      body: String(r.body),
+      order_index: Number(r.order_index),
+    }));
+  },
+);
+
+/** Masked practice question — no correct answer sent to the client.
+ *  Correctness is validated server-side on submit. */
+export interface PracticeQuestion {
+  id: number;
+  profession_id: number;
+  course_id: number | null;
+  question: string;
+  options: string[];
+  difficulty: string;
+  topic: string;
+  is_sample: boolean;
+}
+
+export const listPracticeQuestions = createServerFn().handler(
+  async ({ data }: { data: { professionId?: number } }): Promise<PracticeQuestion[]> => {
+    await initDb();
+    const rows = (data.professionId
+      ? db()
+          .query(
+            "SELECT * FROM practice_questions WHERE profession_id = $pid ORDER BY topic, id",
+          )
+          .all({ $pid: data.professionId })
+      : db().query("SELECT * FROM practice_questions ORDER BY topic, id").all()) as Array<
+      Record<string, unknown>
+    >;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      profession_id: Number(r.profession_id),
+      course_id: r.course_id === null ? null : Number(r.course_id),
+      question: String(r.question),
+      options: parseJson<string[]>(r.options as string, []),
+      difficulty: String(r.difficulty ?? "easy"),
+      topic: String(r.topic ?? ""),
+      is_sample: Number(r.is_sample) === 1,
+    }));
+  },
+);
+
+export interface AnswerResult {
+  ok: boolean;
+  correct: boolean;
+  explanation: string;
+  loggedIn: boolean;
+  error?: string;
+}
+
+export const answerQuestion = createServerFn({ method: "POST" }).handler(
+  async ({ data }: { data: { questionId: number; optionIndex: number } }): Promise<AnswerResult> => {
+    await initDb();
+    const token = getCookie(SESSION_COOKIE);
+    const user = identityFromToken(db(), token);
+    const row = db()
+      .query("SELECT correct_index, explanation FROM practice_questions WHERE id = $qid")
+      .get({ $qid: data.questionId }) as
+      | { correct_index: number; explanation: string }
+      | undefined;
+    if (!row) return { ok: false, correct: false, explanation: "", loggedIn: !!user, error: "Question not found." };
+    const correct = Number(row.correct_index) === Number(data.optionIndex);
+    if (user) {
+      db()
+        .query(
+          `INSERT INTO question_progress (user_id, question_id, correct, answered_at)
+           VALUES ($uid, $qid, $correct, $now)
+           ON CONFLICT(user_id, question_id) DO UPDATE SET
+             correct = excluded.correct, answered_at = excluded.answered_at`,
+        )
+        .run({ $uid: user.id, $qid: data.questionId, $correct: correct ? 1 : 0, $now: new Date().toISOString() });
+    }
+    return { ok: true, correct, explanation: String(row.explanation ?? ""), loggedIn: !!user };
+  },
+);
+
+export interface TopicAccuracy {
+  topic: string;
+  answered: number;
+  correct: number;
+  accuracy: number; // 0-100
+}
+export interface ExamProgress {
+  totalQuestions: number;
+  answered: number;
+  correct: number;
+  pctAnswered: number; // 0-100
+  pctCorrect: number; // 0-100 of answered
+  byTopic: TopicAccuracy[];
+  weakTopics: string[];
+}
+
+export const getExamProgress = createServerFn().handler(
+  async ({ data }: { data: { professionId?: number } }): Promise<ExamProgress | null> => {
+    await initDb();
+    const token = getCookie(SESSION_COOKIE);
+    const user = identityFromToken(db(), token);
+    if (!user) return null;
+
+    const pid = data.professionId;
+    const total = (
+      pid
+        ? db().query("SELECT COUNT(*) AS c FROM practice_questions WHERE profession_id = $pid").get({ $pid: pid })
+        : db().query("SELECT COUNT(*) AS c FROM practice_questions").get()
+    ) as { c: number };
+
+    const joined = pid
+      ? db()
+          .query(
+            `SELECT q.topic, qp.correct
+               FROM question_progress qp
+               JOIN practice_questions q ON q.id = qp.question_id
+              WHERE qp.user_id = $uid AND q.profession_id = $pid`,
+          )
+          .all({ $uid: user.id, $pid: pid })
+      : db()
+          .query(
+            `SELECT q.topic, qp.correct
+               FROM question_progress qp
+               JOIN practice_questions q ON q.id = qp.question_id
+              WHERE qp.user_id = $uid`,
+          )
+          .all({ $uid: user.id });
+
+    const answers = joined as Array<{ topic: string; correct: number }>;
+    const answered = answers.length;
+    const correct = answers.filter((a) => Number(a.correct) === 1).length;
+
+    const byTopicMap = new Map<string, { topic: string; answered: number; correct: number }>();
+    for (const a of answers) {
+      const t = byTopicMap.get(a.topic) ?? { topic: a.topic, answered: 0, correct: 0 };
+      t.answered += 1;
+      if (Number(a.correct) === 1) t.correct += 1;
+      byTopicMap.set(a.topic, t);
+    }
+    const byTopic = [...byTopicMap.values()].map((t) => ({
+      ...t,
+      accuracy: t.answered ? Math.round((t.correct / t.answered) * 100) : 0,
+    }));
+    byTopic.sort((a, b) => a.accuracy - b.accuracy);
+    // "Weak topics" are the lowest-accuracy topics with at least one answer —
+    // clearly sample-derived, NOT a real-exam prediction.
+    const weakTopics = byTopic.filter((t) => t.answered >= 1 && t.accuracy < 60).map((t) => t.topic);
+
+    return {
+      totalQuestions: Number(total.c),
+      answered,
+      correct,
+      pctAnswered: Number(total.c) ? Math.round((answered / Number(total.c)) * 100) : 0,
+      pctCorrect: answered ? Math.round((correct / answered) * 100) : 0,
+      byTopic,
+      weakTopics,
+    };
+  },
+);
+
 export interface FundingCategory {
   id: number;
   name: string;
