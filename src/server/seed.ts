@@ -39,8 +39,24 @@ export async function seedIfEmpty(d: Database): Promise<void> {
   // Backfill explorer profiles for existing rows (idempotent — only sets rows
   // where the column is still NULL, so it never overwrites or duplicates).
   seedExplorerProfiles(d);
+  // M3: persistent, idempotent content upgrades that also run on pre-existing DBs:
+  //  - roadmap official-links (real links only or empty for "confirm with authority")
+  //  - per-profession sample exam courses + lessons
+  //  - the per-profession sample practice-question bank (with topic/difficulty)
+  seedRoadmapOfficialLinks(d);
+  seedExamContent(d);
+  seedQuestionBank(d);
   // User seeding hashes passwords (async bcrypt) — do it outside the sync txn.
   await seedUsers(d);
+}
+
+/** Resolve a profession id by slug from the DB (robust even when the seed-time
+ *  slug map wasn't populated, e.g. on an already-seeded database). */
+function professionIdFor(d: Database, slug: string): number {
+  const row = d
+    .query("SELECT id FROM professions WHERE slug = $s")
+    .get({ $s: slug }) as { id: number } | undefined;
+  return row ? Number(row.id) : -1;
 }
 
 function insertProfession(
@@ -1082,6 +1098,239 @@ function seedExplorerProfiles(d: Database): void {
   );
   for (const [slug, profile] of Object.entries(profiles)) {
     upd.run({ $slug: slug, $profile: JSON.stringify(profile) });
+  }
+}
+
+// ======================================================================
+// ROADMAP OFFICIAL LINKS (M3) — only REAL, verifiable links; otherwise left
+// NULL and the UI shows a "confirm with your authority" placeholder.
+// ======================================================================
+function seedRoadmapOfficialLinks(d: Database): void {
+  const links: Array<{ title: string; label: string; url: string }> = [
+    {
+      title: "Get an EIN and open a business bank account",
+      label: "IRS — Employer ID Numbers",
+      url: "https://www.irs.gov/businesses/small-businesses-self-employed/employer-id-numbers",
+    },
+    {
+      title: "Apply for & prepare for the NCLEX",
+      label: "NCSBN — National Council of State Boards of Nursing",
+      url: "https://www.ncsbn.org",
+    },
+    {
+      title: "Prepare for your state's electrician exam",
+      label: "NFPA — National Electrical Code",
+      url: "https://www.nfpa.org",
+    },
+    {
+      title: "Register for and pass your state real estate exam",
+      label: "ARELLO — real estate license law officials",
+      url: "https://www.arello.org",
+    },
+  ];
+  const upd = d.prepare(
+    `UPDATE roadmap_tasks SET official_link = $url WHERE title = $title AND official_link IS NULL`,
+  );
+  for (const l of links) {
+    upd.run({ $title: l.title, $url: l.url });
+  }
+}
+
+// ======================================================================
+// SAMPLE EXAM COURSES + LESSONS (M3) — clearly sample content, not the
+// official exam. 1 course per profession, 3 short sample lessons each.
+// ======================================================================
+function seedExamContent(d: Database): void {
+  type Lesson = { title: string; body: string };
+  const courses: Array<{ slug: string; title: string; description: string; lessons: Lesson[] }> = [
+    {
+      slug: "electrician",
+      title: "Electrical Systems & NEC Basics (Sample)",
+      description:
+        "A short sample overview of electrical theory, the National Electrical Code, and safety practices. This is sample study content — not the official exam and not a substitute for your state-approved curriculum.",
+      lessons: [
+        {
+          title: "Electrical Theory Fundamentals (Sample)",
+          body: "This sample lesson covers the basic units used in electrical work: voltage (measured in volts), current (amperes), resistance (ohms), and power (watts). In a simple series circuit, a single open break stops current flow through the whole loop. Understanding these relationships is the foundation for reading wiring and troubleshooting.\n\nSample content only — confirm the depth and topics required for your specific state exam with your licensing authority.",
+        },
+        {
+          title: "Introduction to the National Electrical Code (Sample)",
+          body: "The National Electrical Code (NEC) is a widely used set of standards for safe electrical installation. Key ideas include conductor ampacity (the maximum current a conductor can safely carry), grounding, and bonding for electrical continuity and fault protection.\n\nThis is sample study material. Always train with the current, official code and your state-approved program.",
+        },
+        {
+          title: "Safety & Working Practices (Sample)",
+          body: "Working safely on electrical systems means verifying power is off before work where required, using appropriate test instruments such as a digital multimeter, and using protective devices like GFCIs in wet locations. Safe work practices protect the electrician and the occupants.\n\nSample content only — follow your employer/state safety requirements and the authority having jurisdiction.",
+        },
+      ],
+    },
+    {
+      slug: "nursing",
+      title: "NCLEX-RN Readiness (Sample)",
+      description:
+        "A short sample set of lessons aligned to broad NCLEX client-need areas. This is sample study content only — it is not the NCLEX and does not predict exam performance.",
+      lessons: [
+        {
+          title: "Safe & Effective Care Environment (Sample)",
+          body: "This sample lesson covers core ideas about keeping patients safe: identifying the client with two identifiers before care, practicing hand hygiene to reduce infection, and protecting the client during care. Prioritizing safety and infection control are recurring themes in nursing review.\n\nSample content only — see your board of nursing and approved review materials for real exam details.",
+        },
+        {
+          title: "Health Promotion & Physiological Integrity (Sample)",
+          body: "This sample lesson touches on preventive health topics such as adult immunizations, bone-health nutrition, and recognizing signs of dehydration or low blood glucose. These are the kinds of physiological-integrity topics that appear in nursing review materials.\n\nThis is sample study content, not the official exam or a promise of passing.",
+        },
+        {
+          title: "Fundamentals of Prioritization & Communication (Sample)",
+          body: "Nurses often prioritize based on what threatens the client's airway, breathing, and circulation first. Therapeutic communication keeps the focus on the client's perspective, for example by inviting them to share how they are feeling rather than dismissing a concern.\n\nSample review content only — always reference current, approved nursing education and your state board of nursing.",
+        },
+      ],
+    },
+    {
+      slug: "real-estate",
+      title: "Real Estate Licensing Principles (Sample)",
+      description:
+        "A short sample set of lessons on real estate principles, agency, finance, and licensing. This is sample study content — not the official state exam and not legal advice.",
+      lessons: [
+        {
+          title: "Real Estate Principles & Practices (Sample)",
+          body: "This sample lesson introduces core concepts like the MLS (Multiple Listing Service), the physical characteristics of land (immobility, indestructibility, and uniqueness), and how property is brought to market. These basics support the day-to-day work of an agent.\n\nSample content only — confirm the topics for your state exam with your state real estate commission.",
+        },
+        {
+          title: "Contracts, Agency & Finance Basics (Sample)",
+          body: "Agency relationships define whom an agent represents: a buyer's agent represents the buyer, and the agent owes fiduciary duties. Around financing, a mortgage payment often includes principal, interest, and escrowed taxes and insurance (PITI).\n\nThis is sample study material, not legal advice. Consult a qualified professional for your transaction.",
+        },
+        {
+          title: "State Law & Ethics Review (Sample)",
+          body: "Licensing and continuing-education requirements are set by each state's licensing authority, and agency disclosure informs parties whom the agent represents. Ethical practice keeps the client's interests ahead of the agent's own.\n\nSample content only — confirm your state's specific pre-licensing and continuing-education requirements.",
+        },
+      ],
+    },
+  ];
+
+  for (const c of courses) {
+    const pid = professionIdFor(d, c.slug);
+    if (pid < 0) continue;
+    let courseId: number;
+    const existing = d
+      .query("SELECT id FROM exam_courses WHERE profession_id = $pid")
+      .get({ $pid: pid }) as { id: number } | undefined;
+    if (existing) {
+      courseId = Number(existing.id);
+    } else {
+      const info = d
+        .query(
+          "INSERT INTO exam_courses (profession_id, title, description, is_sample) VALUES ($pid, $t, $d, 1)",
+        )
+        .run({ $pid: pid, $t: c.title, $d: c.description });
+      courseId = Number(info.lastInsertRowid);
+    }
+    const lessonCount = d
+      .query("SELECT COUNT(*) AS c FROM lessons WHERE course_id = $cid")
+      .get({ $cid: courseId }) as { c: number };
+    if (lessonCount.c === 0) {
+      const ins = d.prepare(
+        "INSERT INTO lessons (course_id, title, body, order_index) VALUES ($cid, $t, $b, $o)",
+      );
+      c.lessons.forEach((l, i) =>
+        ins.run({ $cid: courseId, $t: l.title, $b: l.body, $o: i }),
+      );
+    }
+  }
+}
+
+// ======================================================================
+// SAMPLE PRACTICE QUESTION BANK (M3) — original, sample-labeled questions.
+// Extends the M1 6 questions into ~10 per profession (30 total) with topic +
+// difficulty, and assigns each profession's questions to its sample course.
+// Idempotent: updates metadata on existing rows and inserts only as many as
+// needed to reach the target count (never duplicates).
+// ======================================================================
+function seedQuestionBank(d: Database): void {
+  type Q = {
+    q: string;
+    opts: string[];
+    ci: number;
+    exp: string;
+    topic: string;
+    diff: string;
+  };
+  const sets: Record<string, Q[]> = {
+    electrician: [
+      { q: "Which organization develops the National Electrical Code (NEC)? (Sample question)", opts: ["OSHA", "NFPA", "EPA", "FDA"], ci: 1, exp: "The National Electrical Code is developed by the NFPA (nfpa.org). Sample question only.", topic: "National Electrical Code", diff: "easy" },
+      { q: "What does a circuit breaker primarily protect against? (Sample question)", opts: ["Water damage", "Overcurrent / short circuits", "Pest intrusion", "Vandalism"], ci: 1, exp: "Circuit breakers protect wiring from overcurrent and short circuits. Sample question only.", topic: "Electrical Theory", diff: "easy" },
+      { q: "In a simple series circuit, if one resistor fails open, what happens to the current? (Sample question)", opts: ["Current increases", "Current stops flowing through the loop", "Current is unchanged", "Voltage doubles"], ci: 1, exp: "An open break in a series circuit stops current through the whole loop. Sample question only.", topic: "Electrical Theory", diff: "medium" },
+      { q: "Which device is designed to protect people from electric shock in wet locations? (Sample question)", opts: ["GFCI outlet", "Standard fuse", "Step-down transformer", "Relay"], ci: 0, exp: "A GFCI (ground-fault circuit interrupter) is designed to cut power on a ground fault, often required in wet locations. Sample question only.", topic: "Safety", diff: "easy" },
+      { q: "What does the ampacity of a conductor refer to? (Sample question)", opts: ["Its physical length", "The maximum current it can safely carry", "Its color code", "Its resistance at 0ºC"], ci: 1, exp: "Ampacity is the maximum current a conductor can safely carry under specified conditions. Sample question only.", topic: "National Electrical Code", diff: "medium" },
+      { q: "Which tool is most appropriate for measuring voltage in a live circuit? (Sample question)", opts: ["Digital multimeter", "Pipe wrench", "Tape measure", "Hammer"], ci: 0, exp: "A digital multimeter is used to measure voltage. Sample question only.", topic: "Tools & Equipment", diff: "easy" },
+      { q: "Which unit measures electrical power? (Sample question)", opts: ["Ampere", "Volt", "Watt", "Ohm"], ci: 2, exp: "Electrical power is measured in watts (volts × amps). Sample question only.", topic: "Electrical Theory", diff: "medium" },
+      { q: "What is a primary purpose of grounding a system? (Sample question)", opts: ["To increase the operating voltage", "To provide a safe path for fault current", "To reduce the number of outlets", "To store electrical energy"], ci: 1, exp: "Grounding provides a safe path for fault current and helps protect people and equipment. Sample question only.", topic: "Safety", diff: "medium" },
+      { q: "What does the term bonding refer to in electrical work? (Sample question)", opts: ["Connecting metal parts to establish electrical continuity", "Insulating a conductor", "Increasing circuit resistance", "Painting conduit for identification"], ci: 0, exp: "Bonding connects metal parts to establish electrical continuity so a fault current has a low-resistance path. Sample question only.", topic: "National Electrical Code", diff: "hard" },
+      { q: "A continuity test on a wire is best used to check what? (Sample question)", opts: ["Whether the wire is continuous with no breaks", "The wire's color code", "The voltage present in the circuit", "The load current"], ci: 0, exp: "Continuity testing verifies a complete, unbroken path through a conductor. Sample question only.", topic: "Tools & Equipment", diff: "medium" },
+    ],
+    nursing: [
+      { q: "Which exam do most entry-level registered nurse candidates take to become licensed? (Sample question)", opts: ["MCAT", "NCLEX", "GRE", "LSAT"], ci: 1, exp: "Most RN candidates take the NCLEX through their state board of nursing via NCSBN. Sample question only.", topic: "Safe Care Environment", diff: "easy" },
+      { q: "What is the primary purpose of the NCLEX-RN? (Sample question)", opts: ["Test basic programming", "Test entry-level nursing competency for safe practice", "Assess physical fitness", "Evaluate marketing skills"], ci: 1, exp: "The NCLEX-RN measures entry-level nursing competence for safe practice. Sample question only.", topic: "Safe Care Environment", diff: "easy" },
+      { q: "A patient's oxygen saturation reads 88%. Which action best supports the airway and breathing? (Sample question)", opts: ["Administer a sedative", "Reposition and provide supplemental oxygen per protocol", "Restrict all fluids", "Encourage deep breathing only during exercise"], ci: 1, exp: "Positioning and supplemental oxygen support oxygenation; 88% saturation warrants prompt attention per protocol. Sample question only.", topic: "Physiological Integrity", diff: "medium" },
+      { q: "Which nutrient is important for bone health and commonly discussed in wellness education? (Sample question)", opts: ["Calcium", "Caffeine", "Sodium", "Saturated fat"], ci: 0, exp: "Calcium is important for bone health and is a common wellness-education topic. Sample question only.", topic: "Health Promotion", diff: "easy" },
+      { q: "Which action best reduces the risk of healthcare-associated infection? (Sample question)", opts: ["Hand hygiene before and after client contact", "Sharing client care items", "Leaving bed rails down", "Reusing single-use gloves"], ci: 0, exp: "Hand hygiene is a cornerstone of infection prevention. Sample question only.", topic: "Safe Care Environment", diff: "medium" },
+      { q: "A client with diabetes has a blood glucose of 45 mg/dL. Which response is most appropriate? (Sample question)", opts: ["Provide a fast-acting carbohydrate per protocol", "Withhold all food", "Increase the insulin dose", "Decrease glucose monitoring"], ci: 0, exp: "A low blood glucose reading is treated with a fast-acting carbohydrate per protocol. Sample question only.", topic: "Physiological Integrity", diff: "hard" },
+      { q: "Which response best demonstrates therapeutic communication? (Sample question)", opts: ["“Tell me more about how you are feeling.”", "“You shouldn't worry about that.”", "“Everyone handles this the same way.”", "“Just focus on getting better.”"], ci: 0, exp: "Inviting the client to elaborate keeps communication client-focused and therapeutic. Sample question only.", topic: "Psychosocial Integrity", diff: "easy" },
+      { q: "Which group of immunizations is commonly recommended for adults as part of preventive health? (Sample question)", opts: ["Influenza and tetanus boosters per current guidelines", "None are recommended for adults", "Only travel immunizations", "Only childhood immunizations"], ci: 0, exp: "Adult immunizations such as influenza and tetanus boosters are commonly recommended per current guidelines. Sample question only.", topic: "Health Promotion", diff: "medium" },
+      { q: "When identifying a client before medication administration, which is appropriate to confirm? (Sample question)", opts: ["Two identifiers such as name and date of birth", "The client's favorite color", "The room number alone", "The client's shoe size"], ci: 0, exp: "Using two identifiers (e.g., name and date of birth) is a standard safety practice before medication. Sample question only.", topic: "Safe Care Environment", diff: "hard" },
+      { q: "Which finding suggests possible dehydration? (Sample question)", opts: ["Decreased urine output", "Increased skin turgor", "Moist mucous membranes", "Clear urine"], ci: 0, exp: "Decreased urine output can be a sign of dehydration. Sample question only.", topic: "Physiological Integrity", diff: "medium" },
+    ],
+    "real-estate": [
+      { q: "Which national organization is closely associated with real estate professionals and the REALTOR designation? (Sample question)", opts: ["NAR", "NFPA", "FAA", "USDA"], ci: 0, exp: "The National Association of REALTORS (nar.realtor) is the professional association. Sample question only.", topic: "Principles & Practices", diff: "easy" },
+      { q: "Before taking a state license exam, most states require agents to complete what? (Sample question)", opts: ["No preparation", "State-approved pre-licensing coursework", "A medical exam", "A driving test"], ci: 1, exp: "Most states require state-approved pre-licensing education before the exam. Sample question only.", topic: "State Law & Ethics", diff: "easy" },
+      { q: "Which term describes the estimated value of a property based on comparable sales? (Sample question)", opts: ["Market or appraised value", "Tax basis", "Replacement cost only", "Assessed penalty"], ci: 0, exp: "An appraisal or market value is commonly estimated from comparable sales. Sample question only.", topic: "Finance & Valuation", diff: "medium" },
+      { q: "In a typical buyer representation agreement, whom does the buyer's agent represent? (Sample question)", opts: ["The buyer", "The seller", "The lender", "Both buyer and seller equally"], ci: 0, exp: "A buyer's agent represents the buyer in a typical buyer representation agreement. Sample question only.", topic: "Contracts & Agency", diff: "medium" },
+      { q: "What does MLS commonly stand for in real estate? (Sample question)", opts: ["Multiple Listing Service", "Main Lending System", "Municipal Licensing Service", "Market Location Service"], ci: 0, exp: "MLS stands for Multiple Listing Service, the shared database of listings. Sample question only.", topic: "Principles & Practices", diff: "easy" },
+      { q: "A real estate agent who puts a client's interests ahead of their own is practicing what? (Sample question)", opts: ["Fiduciary duty", "Negligence", "Dual agency without consent", "Deceptive practice"], ci: 0, exp: "Putting the client's interests ahead of one's own reflects fiduciary duty. Sample question only.", topic: "State Law & Ethics", diff: "medium" },
+      { q: "Which of the following often makes up the full mortgage payment (PITI)? (Sample question)", opts: ["Principal and interest", "Property taxes and insurance (when escrowed)", "All of the above together", "Only closing costs"], ci: 2, exp: "PITI commonly includes principal, interest, taxes, and insurance. Sample question only.", topic: "Finance & Valuation", diff: "hard" },
+      { q: "What is an example of an agency disclosure in a real estate transaction? (Sample question)", opts: ["Informing parties whom the agent represents", "Advertising a listing's asking price", "Setting the commission rate", "Choosing the escrow officer"], ci: 0, exp: "An agency disclosure tells parties whom the agent represents in the transaction. Sample question only.", topic: "Contracts & Agency", diff: "hard" },
+      { q: "The physical characteristics of land include which of the following? (Sample question)", opts: ["Immobility, indestructibility, and uniqueness", "Easy duplication", "Instant mobility", "Perishability"], ci: 0, exp: "Land is commonly described as immobile, indestructible, and unique. Sample question only.", topic: "Principles & Practices", diff: "medium" },
+      { q: "Continuing-education requirements for real estate license renewal are typically set by whom? (Sample question)", opts: ["The state licensing authority", "The homeowner", "The local utility company", "The title company"], ci: 0, exp: "State licensing authorities typically set continuing-education requirements. Sample question only.", topic: "State Law & Ethics", diff: "medium" },
+    ],
+  };
+
+  for (const [slug, rows] of Object.entries(sets)) {
+    const pid = professionIdFor(d, slug);
+    if (pid < 0) continue;
+    const course = d
+      .query("SELECT id FROM exam_courses WHERE profession_id = $pid")
+      .get({ $pid: pid }) as { id: number } | undefined;
+    const cid = course ? Number(course.id) : null;
+    // Update topic/difficulty/course_id on any existing matching rows.
+    const upd = d.prepare(
+      `UPDATE practice_questions SET topic = $topic, difficulty = $diff, course_id = $cid
+        WHERE profession_id = $pid AND question = $q`,
+    );
+    for (const r of rows) {
+      upd.run({ $pid: pid, $q: r.q, $topic: r.topic, $diff: r.diff, $cid: cid });
+    }
+    // Insert only enough to reach the target count (never duplicates).
+    const target = 10;
+    const cnt = d
+      .query("SELECT COUNT(*) AS c FROM practice_questions WHERE profession_id = $pid")
+      .get({ $pid: pid }) as { c: number };
+    if (cnt.c < target) {
+      const ins = d.prepare(
+        `INSERT INTO practice_questions
+           (profession_id, question, options, correct_index, explanation, is_sample, topic, difficulty, course_id)
+         VALUES ($pid, $q, $opts, $ci, $exp, 1, $topic, $diff, $cid)`,
+      );
+      for (let i = cnt.c; i < target && i < rows.length; i++) {
+        const r = rows[i];
+        ins.run({
+          $pid: pid,
+          $q: r.q,
+          $opts: JSON.stringify(r.opts),
+          $ci: r.ci,
+          $exp: r.exp,
+          $topic: r.topic,
+          $diff: r.diff,
+          $cid: cid,
+        });
+      }
+    }
   }
 }
 

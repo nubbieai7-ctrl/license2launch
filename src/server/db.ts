@@ -157,11 +157,54 @@ function migrate(d: Database): void {
       is_sample     INTEGER NOT NULL DEFAULT 0,
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- M3: personalized roadmap progress (persisted per user).
+    CREATE TABLE IF NOT EXISTS roadmap_progress (
+      user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      roadmap_task_id INTEGER NOT NULL REFERENCES roadmap_tasks(id) ON DELETE CASCADE,
+      status          TEXT NOT NULL DEFAULT 'not_started'
+                      CHECK (status IN ('not_started','in_progress','done')),
+      deadline        TEXT,
+      notes           TEXT NOT NULL DEFAULT '',
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, roadmap_task_id)
+    );
+
+    -- M3: exam preparation center.
+    CREATE TABLE IF NOT EXISTS exam_courses (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      profession_id INTEGER NOT NULL REFERENCES professions(id) ON DELETE CASCADE,
+      title         TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      is_sample     INTEGER NOT NULL DEFAULT 1,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS lessons (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      course_id   INTEGER NOT NULL REFERENCES exam_courses(id) ON DELETE CASCADE,
+      title       TEXT NOT NULL,
+      body        TEXT NOT NULL DEFAULT '',
+      order_index INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS question_progress (
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      question_id INTEGER NOT NULL REFERENCES practice_questions(id) ON DELETE CASCADE,
+      correct     INTEGER NOT NULL DEFAULT 0,
+      answered_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, question_id)
+    );
   `);
 
   // Forward migrations for DBs created before a column existed.
   // ensureColumn is idempotent — it only adds the column if it's missing.
   ensureColumn(d, "professions", "explorer_profile", "TEXT");
+  ensureColumn(d, "roadmap_tasks", "official_link", "TEXT");
+  // M3 practice-question bank metadata (course_id nullable; difficulty/topic).
+  ensureColumn(d, "practice_questions", "course_id", "INTEGER");
+  ensureColumn(d, "practice_questions", "difficulty", "TEXT");
+  ensureColumn(d, "practice_questions", "topic", "TEXT");
 }
 
 /** Add a column to a table if it does not already exist (idempotent).
